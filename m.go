@@ -64,7 +64,7 @@ func main() {
 	const specificText = "https://choiceqr.com"
 
 	// Create a rate limiter: ticker that ticks every 200ms with a random delay
-	ticker := time.NewTicker(50*time.Millisecond + time.Duration(rand.Intn(250))*time.Millisecond)
+	ticker := time.NewTicker(50*time.Millisecond + time.Duration(rand.Intn(50))*time.Millisecond)
 	defer ticker.Stop()
 
 	// Output file to write positive results
@@ -76,6 +76,7 @@ func main() {
 	defer outputFile.Close()
 
 	checkedCount := 0
+	start := time.Now()
 
 	// Check each domain one by one
 	for _, domain := range domains {
@@ -119,12 +120,16 @@ func main() {
 		checkedCount++
 		// }
 		fmt.Printf("Checked %d domains\n", checkedCount)
+		// calculate esitmated time remaining
+		elapsed := time.Since(start)
+		remaining := time.Duration(int64(elapsed) / int64(checkedCount) * int64(len(domains)-checkedCount))
+		fmt.Printf("Estimated time remaining: %v\n", remaining)
 	}
 }
 
 func checkDomainForText(url, text string) (bool, error) {
 	client := &http.Client{
-		Timeout: 1 * time.Second,
+		Timeout: 30 * time.Second,
 	}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
