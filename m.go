@@ -124,7 +124,7 @@ func main() {
 
 func checkDomainForText(url, text string) (bool, error) {
 	client := &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout: 1 * time.Second,
 	}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
