@@ -4,12 +4,9 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"math/rand"
 	"net/http"
 	"os"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -22,13 +19,16 @@ type DomainInfo struct {
 }
 
 type Result struct {
-	Found   bool
-	Err     error
-	Domain  DomainInfo
+	Found    bool
+	Err      error
+	Domain   DomainInfo
 	Protocol string // This field will store either "HTTP" or "HTTPS"
 }
 
 func main() {
+	// Track the start time
+	startTime := time.Now()
+
 	// Open the file
 	file, err := os.Open("domains.txt")
 	if err != nil {
@@ -63,66 +63,9 @@ func main() {
 	}
 
 	// Specific text to find
-	const specificText = "google"
+	const specificText = "choiceqr"
 
-	// Create a wait group and a channel to collect results
-	var wg sync.WaitGroup
-	results := make(chan Result, len(domains))
-	var checkedCount int32
-
-	// Rate limiter: ticker that ticks every 200ms with a random delay
-	ticker := time.NewTicker(200*time.Millisecond + time.Duration(rand.Intn(250))*time.Millisecond)
-	defer ticker.Stop()
-
-	// Channel to signal a pause
-	pause := make(chan struct{}, 1)
-
-	// Start a goroutine for each domain check
-	for _, domain := range domains {
-		wg.Add(1)
-		go func(domain DomainInfo) {
-			defer wg.Done()
-
-			for {
-				select {
-				case <-ticker.C:
-					httpUrl := "http://" + domain.Domain
-					httpsUrl := "https://" + domain.Domain
-
-					found, err := checkDomainForText(httpUrl, specificText)
-					if err != nil && strings.Contains(err.Error(), "Client.Timeout exceeded while awaiting headers") {
-						pause <- struct{}{}
-					} else if err == nil && found {
-						results <- Result{Found: true, Err: nil, Domain: domain, Protocol: "HTTP"}
-						atomic.AddInt32(&checkedCount, 1)
-						return
-					} else {
-						found, err := checkDomainForText(httpsUrl, specificText)
-						if err != nil && strings.Contains(err.Error(), "Client.Timeout exceeded while awaiting headers") {
-							pause <- struct{}{}
-						} else {
-							results <- Result{Found: found, Err: err, Domain: domain, Protocol: "HTTPS"}
-							atomic.AddInt32(&checkedCount, 1)
-							return
-						}
-					}
-
-				case <-pause:
-					fmt.Println("Pausing for 5 minutes due to timeout error")
-					time.Sleep(5 * time.Minute)
-					ticker = time.NewTicker(200*time.Millisecond + time.Duration(rand.Intn(250))*time.Millisecond)
-				}
-			}
-		}(domain)
-	}
-
-	// Close the results channel once all goroutines are done
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	// Collect and print results, write positives to a file
+	// Open output file for positive results
 	outputFile, err := os.Create("positive_results.txt")
 	if err != nil {
 		fmt.Println("Error creating output file:", err)
@@ -130,26 +73,73 @@ func main() {
 	}
 	defer outputFile.Close()
 
-	for result := range results {
-		if result.Err != nil {
-			fmt.Printf("Error fetching domain %s: %v\n", result.Domain.Domain, result.Err)
-		} else if result.Found {
-			fmt.Printf("Found '%s' on %s (%s)\n", specificText, result.Domain.Domain, result.Protocol)
-			_, err := outputFile.WriteString(fmt.Sprintf("%s (%s)\n", result.Domain.Domain, result.Protocol))
+	// Statistics
+	var checkedCount int
+	totalDomains := len(domains)
+
+	// Scan each site sequentially
+	for _, domain := range domains {
+		domainStartTime := time.Now() // Start time for each domain
+
+		httpUrl := "http://" + domain.Domain
+		httpsUrl := "https://" + domain.Domain
+
+		// Check HTTP
+		found, err := checkDomainForText(httpUrl, specificText)
+		if err != nil {
+			fmt.Printf("Error fetching domain %s: %v\n", domain.Domain, err)
+		} else if found {
+			fmt.Printf("Found '%s' on %s (HTTP)\n", specificText, domain.Domain)
+			_, err := outputFile.WriteString(fmt.Sprintf("%s (HTTP)\n", domain.Domain))
 			if err != nil {
 				fmt.Println("Error writing to output file:", err)
 			}
-		} else {
-			fmt.Printf("'%s' not found on %s\n", specificText, result.Domain.Domain)
+			checkedCount++
+			logProgress(checkedCount, totalDomains, domainStartTime)
+			continue
 		}
+
+		// Check HTTPS
+		found, err = checkDomainForText(httpsUrl, specificText)
+		if err != nil {
+			fmt.Printf("Error fetching domain %s: %v\n", domain.Domain, err)
+		} else if found {
+			fmt.Printf("Found '%s' on %s (HTTPS)\n", specificText, domain.Domain)
+			_, err := outputFile.WriteString(fmt.Sprintf("%s (HTTPS)\n", domain.Domain))
+			if err != nil {
+				fmt.Println("Error writing to output file:", err)
+			}
+		}
+
+		checkedCount++
+		logProgress(checkedCount, totalDomains, domainStartTime)
 	}
 
-	fmt.Printf("Checked %d domains\n", atomic.LoadInt32(&checkedCount))
+	// Log final statistics
+	totalTime := time.Since(startTime)
+	fmt.Printf("Scan complete. Checked %d domains in %s.\n", checkedCount, totalTime)
+}
+
+// logProgress logs the progress of the scan, including the time taken for each domain.
+func logProgress(checkedCount, totalDomains int, startTime time.Time) {
+	elapsed := time.Since(startTime)
+	fmt.Printf("Checked %d/%d domains. Time taken for this domain: %s. Estimated time remaining: %s.\n",
+		checkedCount, totalDomains, elapsed, estimateRemainingTime(checkedCount, totalDomains, elapsed))
+}
+
+// estimateRemainingTime estimates the remaining time based on the average time per domain.
+func estimateRemainingTime(checkedCount, totalDomains int, timePerDomain time.Duration) time.Duration {
+	if checkedCount == 0 {
+		return 0
+	}
+	averageTime := timePerDomain / time.Duration(checkedCount)
+	remainingDomains := totalDomains - checkedCount
+	return averageTime * time.Duration(remainingDomains)
 }
 
 func checkDomainForText(url, text string) (bool, error) {
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout: 1 * time.Second, // Increased timeout
 	}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
